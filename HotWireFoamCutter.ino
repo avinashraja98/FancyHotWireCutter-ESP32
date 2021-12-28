@@ -6,6 +6,11 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 
+#include "SSD1306Wire.h"
+#include <Wire.h>
+
+#include "font.h"
+
 #define SERVICE_UUID "0fdb887e-6150-11ec-90d6-0242ac120003"
 #define LED_BRIGHT_CHARACTERISTIC_UUID "223fbac6-6150-11ec-90d6-0242ac120003"
 
@@ -22,6 +27,14 @@
 
 #define LED_ROTARY_ENCODER_STEPS 4
 
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 32 // OLED display height, in pixels
+
+#define I2C_SDA 2
+#define I2C_SCL 13
+
+SSD1306Wire display (0x3C, I2C_SDA, I2C_SCL, GEOMETRY_128_32);
+
 AiEsp32RotaryEncoder ledRotaryEncoder = AiEsp32RotaryEncoder (
     LED_ROTARY_ENCODER_A_PIN, LED_ROTARY_ENCODER_B_PIN,
     LED_ROTARY_ENCODER_BUTTON_PIN, -1, LED_ROTARY_ENCODER_STEPS);
@@ -30,6 +43,10 @@ BLECharacteristic *pLedBrightnessCharacteristic;
 
 uint16_t ledDutyCycle = 0;
 bool ledOn = true;
+uint16_t wireDutyCycle = 0;
+bool wireOn = true;
+
+bool updateDisplay = false;
 
 // clang-format off
 void IRAM_ATTR ledReadEncoderISR ()
@@ -71,17 +88,34 @@ class CharacteristicCallbacks : public BLECharacteristicCallbacks
             uint8_t upper = *value;
             ledDutyCycle = ((uint16_t)upper << 8) | lower;
             ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
-            Serial.println ("write");
+            updateDisplay = true;
           }
       }
   }
 };
 
 void
+refreshDisplay ()
+{
+  display.clear ();
+  display.drawString (
+      0, 0,
+      "LED: " + String (ledOn ? "ON" : "OFF") + ", "
+          + String (static_cast<int> ((ledDutyCycle / 65535.0) * 100))
+          + "%\nWire: " + String (wireOn ? "ON" : "OFF") + ", "
+          + String (static_cast<int> ((wireDutyCycle / 65535.0) * 100)) + "%");
+  display.display ();
+}
+
+void
 setup ()
 {
   Serial.begin (115200);
   Serial.println ("Setup...");
+
+  display.init ();
+  display.setFont (Roboto_12);
+  refreshDisplay ();
 
   ledRotaryEncoder.begin ();
   ledRotaryEncoder.setup (ledReadEncoderISR);
@@ -128,6 +162,7 @@ loop ()
   if (ledRotaryEncoder.encoderChanged ())
     {
       ledDutyCycle = ledRotaryEncoder.readEncoder ();
+      updateDisplay = true;
       ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
       pLedBrightnessCharacteristic->setValue (ledDutyCycle);
       pLedBrightnessCharacteristic->notify ();
@@ -135,7 +170,13 @@ loop ()
   if (ledRotaryEncoder.isEncoderButtonClicked ())
     {
       ledOn = !ledOn;
+      updateDisplay = true;
       ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
+    }
+  if (updateDisplay)
+    {
+      refreshDisplay ();
+      updateDisplay = false;
     }
   delay (25);
 }

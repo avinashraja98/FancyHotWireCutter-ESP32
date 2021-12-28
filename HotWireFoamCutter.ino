@@ -7,7 +7,7 @@
 #include <BLEUtils.h>
 
 #define SERVICE_UUID "0fdb887e-6150-11ec-90d6-0242ac120003"
-#define CHARACTERISTIC_UUID "223fbac6-6150-11ec-90d6-0242ac120003"
+#define LED_BRIGHT_CHARACTERISTIC_UUID "223fbac6-6150-11ec-90d6-0242ac120003"
 
 #define LED_PIN 4
 
@@ -17,8 +17,8 @@
 #define PWM_RESOLUTION 16
 
 #define LED_ROTARY_ENCODER_A_PIN 14
-#define LED_ROTARY_ENCODER_B_PIN 2
-#define LED_ROTARY_ENCODER_BUTTON_PIN 15
+#define LED_ROTARY_ENCODER_B_PIN 15
+#define LED_ROTARY_ENCODER_BUTTON_PIN 12
 
 #define LED_ROTARY_ENCODER_STEPS 4
 
@@ -27,6 +27,9 @@ AiEsp32RotaryEncoder ledRotaryEncoder = AiEsp32RotaryEncoder (
     LED_ROTARY_ENCODER_BUTTON_PIN, -1, LED_ROTARY_ENCODER_STEPS);
 
 BLECharacteristic *pLedBrightnessCharacteristic;
+
+uint16_t ledDutyCycle = 0;
+bool ledOn = true;
 
 // clang-format off
 void IRAM_ATTR ledReadEncoderISR ()
@@ -54,17 +57,22 @@ class ServerCallbacks : public BLEServerCallbacks
 class CharacteristicCallbacks : public BLECharacteristicCallbacks
 {
   void
-  onWrite (BLECharacteristic *pLedBrightnessCharacteristic)
+  onWrite (BLECharacteristic *characteristic)
   {
-    uint8_t *value = pLedBrightnessCharacteristic->getData ();
+    uint8_t *value = characteristic->getData ();
 
     if (value != nullptr)
       {
-        uint8_t lower = *value;
-        value++;
-        uint8_t upper = *value;
-        uint16_t fullValue = ((uint16_t)upper << 8) | lower;
-        ledcWrite (PWM_CHANNEL_LED, fullValue);
+        auto uuidStr = characteristic->getUUID ().toString ();
+        if (uuidStr == LED_BRIGHT_CHARACTERISTIC_UUID)
+          {
+            uint8_t lower = *value;
+            value++;
+            uint8_t upper = *value;
+            ledDutyCycle = ((uint16_t)upper << 8) | lower;
+            ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
+            Serial.println ("write");
+          }
       }
   }
 };
@@ -73,7 +81,7 @@ void
 setup ()
 {
   Serial.begin (115200);
-  Serial.println ("Starting BLE work!");
+  Serial.println ("Setup...");
 
   ledRotaryEncoder.begin ();
   ledRotaryEncoder.setup (ledReadEncoderISR);
@@ -91,12 +99,11 @@ setup ()
   BLEService *pService = pServer->createService (SERVICE_UUID);
 
   pLedBrightnessCharacteristic = pService->createCharacteristic (
-      CHARACTERISTIC_UUID, BLECharacteristic::PROPERTY_READ
-                               | BLECharacteristic::PROPERTY_WRITE_NR
-                               | BLECharacteristic::PROPERTY_NOTIFY);
+      LED_BRIGHT_CHARACTERISTIC_UUID,
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE_NR
+          | BLECharacteristic::PROPERTY_NOTIFY);
   pLedBrightnessCharacteristic->setCallbacks (new CharacteristicCallbacks ());
-  uint16_t startValue = 0;
-  pLedBrightnessCharacteristic->setValue (startValue);
+  pLedBrightnessCharacteristic->setValue (ledDutyCycle);
   BLEDescriptor *pClientCharacteristicConfigDescriptor
       = new BLEDescriptor ((uint16_t)0x2902);
   pLedBrightnessCharacteristic->addDescriptor (
@@ -120,10 +127,15 @@ loop ()
 {
   if (ledRotaryEncoder.encoderChanged ())
     {
-      uint16_t val = ledRotaryEncoder.readEncoder ();
-      ledcWrite (PWM_CHANNEL_LED, val);
-      pLedBrightnessCharacteristic->setValue (val);
+      ledDutyCycle = ledRotaryEncoder.readEncoder ();
+      ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
+      pLedBrightnessCharacteristic->setValue (ledDutyCycle);
       pLedBrightnessCharacteristic->notify ();
+    }
+  if (ledRotaryEncoder.isEncoderButtonClicked ())
+    {
+      ledOn = !ledOn;
+      ledcWrite (PWM_CHANNEL_LED, ledOn ? ledDutyCycle : 0);
     }
   delay (25);
 }
